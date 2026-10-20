@@ -1,0 +1,6 @@
+[project]
+name = "moteur-resilience-alpha"
+version = "0.1.0"
+description = "Moteur de remediation reel (liste blanche, proxy Docker) RESILIENCE-ALPHA"
+requires-python = ">=3.11"
+dependencies = ["fastapi", "uvicorn"]

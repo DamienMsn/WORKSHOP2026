@@ -1,0 +1,424 @@
+openapi: 3.0.3
+info:
+  title: RESILIENCE-ALPHA, contrats d'interface
+  version: 0.1.0
+  description: |
+    Contrat commun entre la partie dev/cyber/jeu et les collègues infra et IA.
+    Le simulateur (services/simulateur) imite ces routes ; la vraie plateforme
+    et les services des collègues doivent les respecter. Une réponse porte
+    toujours son mode : `simule` ou `reel` (champ `mode` et en-tête `X-Mode`).
+    Démonstration, clip et jury : mode `reel` uniquement.
+servers:
+  - url: http://192.168.137.1:8080
+    description: PC Hôte (réseau du groupe)
+tags:
+  - name: plateforme
+    description: SI de paiement fictif (développé par l'utilisateur)
+  - name: remediation
+    description: Moteur de remédiation (développé par l'utilisateur) ; reçoit l'alerte de la détection
+  - name: assistant
+    description: Assistant RAG local (collègue IA)
+  - name: detection
+    description: Série des scores d'anomalie du détecteur (collègue IA)
+paths:
+  /auth/token:
+    post:
+      tags: [plateforme]
+      summary: Obtenir un jeton d'accès
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Identifiants'}
+      responses:
+        '200':
+          description: Jeton émis
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Jeton'}
+        '401':
+          description: Identifiants refusés
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Erreur'}
+  /health:
+    get:
+      tags: [plateforme]
+      summary: Santé réelle du service
+      description: |
+        `ok` seulement si le service traite réellement une transaction.
+        Un conteneur qui redémarre sans que l'API réponde n'est pas `ok`.
+      responses:
+        '200':
+          description: État courant (même quand le service est dégradé)
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Sante'}
+  /transactions:
+    post:
+      tags: [plateforme]
+      summary: Créer une transaction fictive
+      security: [{jeton: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransactionEntree'}
+      responses:
+        '201':
+          description: Transaction acceptée
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Transaction'}
+        '401':
+          description: Jeton absent ou invalide
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Erreur'}
+        '503':
+          description: Service indisponible ou dégradé ; jamais de faux succès
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Erreur'}
+  /transactions/{id}:
+    get:
+      tags: [plateforme]
+      summary: Consulter une transaction
+      security: [{jeton: []}]
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: La transaction
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Transaction'}
+        '404':
+          description: Inconnue
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Erreur'}
+  /alerts:
+    post:
+      tags: [remediation]
+      summary: La détection (collègue IA, SIEM ou WAF) envoie une alerte au moteur de remédiation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AlerteEntree'}
+      responses:
+        '202':
+          description: Alerte prise en compte
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlerteAccuse'}
+    get:
+      tags: [remediation]
+      summary: Alertes reçues (lues par le cockpit du jeu)
+      responses:
+        '200':
+          description: Liste, la plus récente en dernier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts, mode]
+                properties:
+                  alerts:
+                    type: array
+                    items: {$ref: '#/components/schemas/Alerte'}
+                  mode: {$ref: '#/components/schemas/Mode'}
+  /events:
+    get:
+      tags: [remediation]
+      summary: Journal des événements de la reprise (lu par le cockpit du jeu)
+      responses:
+        '200':
+          description: Événements, le plus récent en dernier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, mode]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/Evenement'}
+                  mode: {$ref: '#/components/schemas/Mode'}
+    post:
+      tags: [remediation]
+      summary: Un poste (attaquant) déclare un événement pour l'affichage de la salle de contrôle
+      description: |
+        Sert uniquement à l'affichage : l'alerte de détection reste produite par la détection,
+        jamais par ce déclaratif. L'événement porte `source: attaquant`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EvenementEntree'}
+      responses:
+        '202':
+          description: Événement ajouté au journal
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/AlerteAccuse'}
+  /flux-bloques:
+    get:
+      tags: [detection]
+      summary: Flux bloqués par le WAF ou le SIEM (collègue infra), pour la salle de contrôle
+      description: |
+        Sans WAF branché, la route répond une liste vide : la salle affiche « pas de WAF branché »,
+        jamais des blocages inventés.
+      responses:
+        '200':
+          description: Flux bloqués, le plus récent en dernier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [blocked, total, mode]
+                properties:
+                  blocked:
+                    type: array
+                    items: {$ref: '#/components/schemas/FluxBloque'}
+                  total: {type: integer}
+                  mode: {$ref: '#/components/schemas/Mode'}
+  /verifications:
+    get:
+      tags: [remediation]
+      summary: Vérifications de reprise mesurées par le moteur (sujet p.3), lues par le poste SOC
+      description: |
+        API accessible, une opération métier réussit, données cohérentes. Une vérification
+        n'est jamais `ok` sans mesure.
+      responses:
+        '200':
+          description: Les trois vérifications et leur statut réel
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verifications, mode]
+                properties:
+                  verifications:
+                    type: array
+                    items: {$ref: '#/components/schemas/Verification'}
+                  mode: {$ref: '#/components/schemas/Mode'}
+  /scores:
+    get:
+      tags: [detection]
+      summary: Scores d'anomalie du détecteur, pour la courbe en direct (collègue IA)
+      description: |
+        Sans détecteur branché, la route répond une liste vide : la salle de contrôle affiche
+        « pas de détecteur branché », jamais une courbe inventée.
+      parameters:
+        - {name: since, in: query, required: false, schema: {type: string, format: date-time}}
+      responses:
+        '200':
+          description: Scores, le plus récent en dernier
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scores, mode]
+                properties:
+                  scores:
+                    type: array
+                    items: {$ref: '#/components/schemas/Score'}
+                  mode: {$ref: '#/components/schemas/Mode'}
+  /components:
+    get:
+      tags: [remediation]
+      summary: État de chaque composant (lu par le cockpit du jeu)
+      responses:
+        '200':
+          description: Composants et leur état
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [components, mode]
+                properties:
+                  components:
+                    type: array
+                    items: {$ref: '#/components/schemas/Composant'}
+                  mode: {$ref: '#/components/schemas/Mode'}
+  /assistant/ask:
+    post:
+      tags: [assistant]
+      summary: Poser une question à l'assistant (implémenté par le collègue IA)
+      description: |
+        L'assistant informe, il ne répare pas. Réponse lente : le client affiche
+        une attente honnête, jamais un texte écrit à l'avance.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Question'}
+      responses:
+        '200':
+          description: Réponse avec ses sources
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Reponse'}
+components:
+  securitySchemes:
+    jeton:
+      type: http
+      scheme: bearer
+  schemas:
+    Mode:
+      type: string
+      enum: [simule, reel]
+    Erreur:
+      type: object
+      required: [detail, mode]
+      properties:
+        detail: {type: string}
+        mode: {$ref: '#/components/schemas/Mode'}
+    Identifiants:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string}
+    Jeton:
+      type: object
+      required: [access_token, token_type, mode]
+      properties:
+        access_token: {type: string}
+        token_type: {type: string, enum: [bearer]}
+        mode: {$ref: '#/components/schemas/Mode'}
+    Sante:
+      type: object
+      required: [status, last_transaction_ok, checked_at, mode]
+      properties:
+        status: {type: string, enum: [ok, degraded, down]}
+        last_transaction_ok: {type: boolean}
+        checked_at: {type: string, format: date-time}
+        mode: {$ref: '#/components/schemas/Mode'}
+    TransactionEntree:
+      type: object
+      required: [amount_cents, currency, payer, payee]
+      properties:
+        amount_cents: {type: integer, minimum: 1}
+        currency: {type: string, enum: [EUR]}
+        payer: {type: string}
+        payee: {type: string}
+        idempotency_key: {type: string}
+    Transaction:
+      type: object
+      required: [id, amount_cents, currency, payer, payee, status, created_at, mode]
+      properties:
+        id: {type: string}
+        amount_cents: {type: integer}
+        currency: {type: string}
+        payer: {type: string}
+        payee: {type: string}
+        status: {type: string, enum: [accepted, refused]}
+        created_at: {type: string, format: date-time}
+        mode: {$ref: '#/components/schemas/Mode'}
+    AlerteEntree:
+      type: object
+      required: [source, kind, severity, target]
+      properties:
+        source: {type: string, enum: [ml, waf, siem, simulateur]}
+        kind: {type: string, description: "ex. anomaly, dos, injection"}
+        severity: {type: string, enum: [low, medium, high]}
+        score: {type: number}
+        target: {type: string, description: "composant visé, ex. payment-api"}
+        detail: {type: string}
+        recommendation: {$ref: '#/components/schemas/Recommandation'}
+    Recommandation:
+      type: object
+      description: |
+        Recommandation du détecteur (collègue IA) pour cet incident. Informative : un humain ne
+        l'exécute jamais ; le moteur de remédiation la valide contre sa liste blanche d'actions.
+      required: [summary, suggested_action, confidence]
+      properties:
+        summary: {type: string}
+        suggested_action: {type: string, enum: [restart_service, block_source, rate_limit, scale_up, none]}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        rationale: {type: string}
+    FluxBloque:
+      type: object
+      required: [at, source_ip, rule, count, target]
+      properties:
+        at: {type: string, format: date-time}
+        source_ip: {type: string}
+        rule: {type: string, description: "règle du WAF, ex. injection SQL, limite de débit"}
+        count: {type: integer}
+        target: {type: string}
+    Verification:
+      type: object
+      required: [name, status, detail]
+      properties:
+        name: {type: string, enum: [api_accessible, transaction_test, donnees_coherentes]}
+        status: {type: string, enum: [ok, ko, en_cours]}
+        detail: {type: string}
+    AlerteAccuse:
+      type: object
+      required: [id, mode]
+      properties:
+        id: {type: string}
+        mode: {$ref: '#/components/schemas/Mode'}
+    Alerte:
+      allOf:
+        - $ref: '#/components/schemas/AlerteEntree'
+        - type: object
+          required: [id, detected_at]
+          properties:
+            id: {type: string}
+            detected_at: {type: string, format: date-time}
+    Evenement:
+      type: object
+      required: [at, type, component, detail]
+      properties:
+        at: {type: string, format: date-time}
+        type: {type: string, enum: [service_degraded, alert_received, action_started, action_done, service_recovered, attack_started, attack_ended]}
+        component: {type: string}
+        detail: {type: string}
+        source: {type: string, enum: [moteur, attaquant, detection]}
+    EvenementEntree:
+      type: object
+      required: [type, component, detail, source]
+      properties:
+        type: {type: string, enum: [attack_started, attack_ended]}
+        component: {type: string}
+        detail: {type: string}
+        source: {type: string, enum: [attaquant]}
+    Score:
+      type: object
+      required: [at, score, threshold]
+      properties:
+        at: {type: string, format: date-time}
+        score: {type: number}
+        threshold: {type: number}
+        label: {type: string, enum: [normal, attaque, inconnu], description: "étiquette connue seulement en simulation ou en jeu de données"}
+    Composant:
+      type: object
+      required: [name, status]
+      properties:
+        name: {type: string}
+        status: {type: string, enum: [ok, degraded, down]}
+        detail: {type: string}
+    Question:
+      type: object
+      required: [question]
+      properties:
+        question: {type: string}
+    Reponse:
+      type: object
+      required: [answer, sources, latency_ms, mode]
+      properties:
+        answer: {type: string}
+        sources:
+          type: array
+          items:
+            type: object
+            required: [document, passage]
+            properties:
+              document: {type: string}
+              passage: {type: string}
+        latency_ms: {type: integer}
+        mode: {$ref: '#/components/schemas/Mode'}

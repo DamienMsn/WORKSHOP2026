@@ -1,0 +1,18 @@
+graphify-out/
+renpy/captures/
+renpy/game/cache/
+*.rpyc
+*.rpyb
+renpy/game/saves/
+services/simulateur/.venv/
+__pycache__/
+renpy/tests/captures/
+
+# secrets locaux : jamais dans le depot
+*.key
+.env
+.env.*
+nanogpt*
+
+services/*/.venv/
+.venv/

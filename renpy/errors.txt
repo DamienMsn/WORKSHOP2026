@@ -1,0 +1,10 @@
+﻿I'm sorry, but errors were detected in your script. Please correct the
+errors listed below, and try again.
+
+
+File "game/ecrans_jeu.rpy", line 117: keyword argument 'yminimum' is incompatible with 'ysize'.
+    yminimum 0
+            ^
+
+Ren'Py Version: Ren'Py 8.5.3.26051504
+Mon Oct 19 12:48:41 2026

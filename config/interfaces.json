@@ -1,0 +1,25 @@
+{
+  "demo": false,
+  "plateforme": {
+    "mode": "simule",
+    "url": "http://127.0.0.1:8765"
+  },
+  "moteur": {
+    "mode": "simule",
+    "url": "http://127.0.0.1:8765"
+  },
+  "assistant": {
+    "mode": "simule",
+    "url": "http://127.0.0.1:8765"
+  },
+  "attaque": {
+    "mode": "simule",
+    "dossier": "attack/simule",
+    "python": "python3"
+  },
+  "role": "tous",
+  "detection": {
+    "mode": "simule",
+    "url": "http://127.0.0.1:8765"
+  }
+}

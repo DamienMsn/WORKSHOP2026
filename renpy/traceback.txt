@@ -1,0 +1,25 @@
+﻿I'm sorry, but an uncaught exception occurred.
+
+While running game code:
+renpy.test.types.RenpyTestAssertionError: failed: <Assert (game/testcases.rpy:341)>
+
+-- Full Traceback ------------------------------------------------------------
+
+Traceback (most recent call last):
+  File "renpy/test/testexecution.py", line 549, in update
+    node_executor.execute()
+    ~~~~~~~~~~~~~~~~~~~~~^^
+  File "renpy/test/testexecution.py", line 471, in execute
+    self.node_state = self.node.execute(self.node_state, elapsed)
+                      ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "renpy/test/testast.py", line 1458, in execute
+    renpy.test.testreporter.reporter.log_assert(self)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "renpy/test/testreporter.py", line 888, in log_assert
+    raise RenpyTestAssertionError(f"{status.value}: {assert_node}")
+renpy.test.types.RenpyTestAssertionError: failed: <Assert (game/testcases.rpy:341)>
+
+Linux-6.12.32-amd64-x86_64-with-glibc2.41 x86_64
+Ren'Py 8.5.3.26051504
+RÉSILIENCE ALPHA 0.1
+Tue Oct 20 09:31:20 2026

@@ -1,0 +1,19 @@
+
+
+
+
+services:
+  paiement:
+    build: ./services/paiement
+    image: alpha-paiement
+    container_name: alpha-paiement
+    ports:
+      - "8780:8000"
+    environment:
+      ALPHA_USERS: "${ALPHA_USERS:-demo:demo,caissier:caisse,soc:soc}"
+    volumes:
+      - paiement-data:/data
+    restart: unless-stopped
+
+volumes:
+  paiement-data:
