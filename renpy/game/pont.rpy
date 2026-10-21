@@ -58,6 +58,8 @@ init -10 python:
             self.arret_demande = False
             self.vague = None          # etat du compteur de participation (jauge, decompte)
             self.qr_vague = None       # chemin relatif du QR telecharge, ou None
+            self.qr_vague_url = None   # web : URL publique du QR (pas de fichier local)
+            self.prochaine_sonde = 0.0 # web : cadenceur du sondage par callback
             self.repetition = dict(passes=0, ok=0, en_cours=False)  # EX-12 : 10 passages sans intervention
 
     ETAT = Etat()
@@ -73,7 +75,31 @@ init -10 python:
             del ETAT.flux[:-6]
         return r
 
+    def _http_brut_web(methode, base, chemin, corps=None, jeton=None, timeout=3.0):
+        """Variante WEB (navigateur) : renpy.fetch au lieu d'urllib (sockets
+        indisponibles dans le bac a sable). Meme contrat de retour.
+        Limites : pas d'acces au corps des erreurs ni aux en-tetes ; le 'mode'
+        est lu dans le corps JSON (que les services renvoient deja)."""
+        url = base.rstrip("/") + chemin
+        entetes = {}
+        if jeton:
+            entetes["Authorization"] = "Bearer " + jeton
+        try:
+            brut = renpy.fetch(url, method=methode, json=corps, timeout=timeout,
+                               result="bytes", headers=entetes)
+            texte = brut.decode("utf-8") if brut else ""
+            data = json.loads(texte) if texte else None
+            mode = data.get("mode") if isinstance(data, dict) else None
+            return dict(code=200, data=data, mode=mode, erreur=None)
+        except renpy.FetchError as e:
+            # .status_code = code HTTP (401/503...) extrait du message, ou None.
+            return dict(code=getattr(e, "status_code", None), data=None, mode=None, erreur=str(e))
+        except Exception as e:
+            return dict(code=None, data=None, mode=None, erreur=str(e))
+
     def http_brut(methode, base, chemin, corps=None, jeton=None, timeout=3.0):
+        if renpy.emscripten:
+            return _http_brut_web(methode, base, chemin, corps, jeton, timeout)
         donnees = json.dumps(corps).encode("utf-8") if corps is not None else None
         requete = urllib.request.Request(base.rstrip("/") + chemin, data=donnees, method=methode,
                                          headers={"Content-Type": "application/json"})
@@ -93,54 +119,71 @@ init -10 python:
         except Exception as e:
             return dict(code=None, data=None, mode=None, erreur=str(e))
 
+    def _sonder_une_fois():
+        """UNE passe de sonde (sans boucle ni sleep). Appelee soit par le thread
+        natif (boucle_sante), soit par le callback periodique en web."""
+        base = ETAT.cfg["plateforme"]["url"]
+        r = http("GET", base, "/health", timeout=1.5)
+        if r["code"] == 200 and r["data"]:
+            ETAT.joignable = True
+            nouveau = r["data"].get("status", "?")
+            ETAT.mode = r["data"].get("mode") or r["mode"] or "?"
+            if nouveau != "ok" and (ETAT.chrono_debut is None or ETAT.chrono_fin is not None):
+                ETAT.chrono_debut = time.time()
+                ETAT.chrono_fin = None
+            if nouveau == "ok" and ETAT.chrono_debut is not None and ETAT.chrono_fin is None:
+                ETAT.chrono_fin = time.time()
+            ETAT.sante = nouveau
+            alertes = http("GET", ETAT.cfg["moteur"]["url"], "/alerts", timeout=1.5)
+            if alertes["code"] == 200 and alertes["data"]:
+                liste = alertes["data"].get("alerts", [])
+                ETAT.alerte = liste[-1] if liste else None
+            ev = http("GET", ETAT.cfg["moteur"]["url"], "/events", timeout=1.5)
+            if ev["code"] == 200 and ev["data"]:
+                ETAT.evenements = ev["data"].get("events", [])[-40:]
+            cp = http("GET", ETAT.cfg["moteur"]["url"], "/components", timeout=1.5)
+            if cp["code"] == 200 and cp["data"]:
+                ETAT.composants = cp["data"].get("components", [])
+            det = ETAT.cfg.get("detection", ETAT.cfg["moteur"])
+            sc = http("GET", det["url"], "/scores", timeout=1.5)
+            if sc["code"] == 200 and sc["data"]:
+                ETAT.scores = sc["data"].get("scores", [])[-60:]
+            fb = http("GET", ETAT.cfg.get("waf", det)["url"], "/flux-bloques", timeout=1.5)
+            if fb["code"] == 200 and fb["data"]:
+                ETAT.flux_bloques = fb["data"].get("blocked", [])
+                ETAT.flux_total = fb["data"].get("total", 0)
+            vf = http("GET", ETAT.cfg["moteur"]["url"], "/verifications", timeout=1.5)
+            if vf["code"] == 200 and vf["data"]:
+                ETAT.verifications = vf["data"].get("verifications", [])
+            pa = http("GET", det["url"], "/participation/etat", timeout=1.5)
+            if pa["code"] == 200 and pa["data"]:
+                ETAT.vague = pa["data"]
+                if ETAT.qr_vague is None and rafraichir_qr_vague(det["url"]):
+                    ETAT.qr_vague = "cache/vague_qr.png"
+        else:
+            ETAT.joignable = False
+
     def boucle_sante():
-        """Interroge la santé toutes les 2 s et mesure la durée réelle de la reprise."""
+        """Natif : interroge la santé en boucle dans un thread d'arrière-plan."""
         while True:
-            base = ETAT.cfg["plateforme"]["url"]
-            r = http("GET", base, "/health", timeout=1.5)
-            if r["code"] == 200 and r["data"]:
-                ETAT.joignable = True
-                nouveau = r["data"].get("status", "?")
-                ETAT.mode = r["data"].get("mode") or r["mode"] or "?"
-                if nouveau != "ok" and (ETAT.chrono_debut is None or ETAT.chrono_fin is not None):
-                    ETAT.chrono_debut = time.time()
-                    ETAT.chrono_fin = None
-                if nouveau == "ok" and ETAT.chrono_debut is not None and ETAT.chrono_fin is None:
-                    ETAT.chrono_fin = time.time()
-                ETAT.sante = nouveau
-                alertes = http("GET", ETAT.cfg["moteur"]["url"], "/alerts", timeout=1.5)
-                if alertes["code"] == 200 and alertes["data"]:
-                    liste = alertes["data"].get("alerts", [])
-                    ETAT.alerte = liste[-1] if liste else None
-                ev = http("GET", ETAT.cfg["moteur"]["url"], "/events", timeout=1.5)
-                if ev["code"] == 200 and ev["data"]:
-                    ETAT.evenements = ev["data"].get("events", [])[-40:]
-                cp = http("GET", ETAT.cfg["moteur"]["url"], "/components", timeout=1.5)
-                if cp["code"] == 200 and cp["data"]:
-                    ETAT.composants = cp["data"].get("components", [])
-                det = ETAT.cfg.get("detection", ETAT.cfg["moteur"])
-                sc = http("GET", det["url"], "/scores", timeout=1.5)
-                if sc["code"] == 200 and sc["data"]:
-                    ETAT.scores = sc["data"].get("scores", [])[-60:]
-                fb = http("GET", ETAT.cfg.get("waf", det)["url"], "/flux-bloques", timeout=1.5)
-                if fb["code"] == 200 and fb["data"]:
-                    ETAT.flux_bloques = fb["data"].get("blocked", [])
-                    ETAT.flux_total = fb["data"].get("total", 0)
-                vf = http("GET", ETAT.cfg["moteur"]["url"], "/verifications", timeout=1.5)
-                if vf["code"] == 200 and vf["data"]:
-                    ETAT.verifications = vf["data"].get("verifications", [])
-                pa = http("GET", det["url"], "/participation/etat", timeout=1.5)
-                if pa["code"] == 200 and pa["data"]:
-                    ETAT.vague = pa["data"]
-                    if ETAT.qr_vague is None and rafraichir_qr_vague(det["url"]):
-                        ETAT.qr_vague = "cache/vague_qr.png"
-            else:
-                ETAT.joignable = False
+            _sonder_une_fois()
             time.sleep(ETAT.cfg.get("sondage_s", 2.0))
+
+    def _tic_sonde_web():
+        """Web : une passe de sonde au plus toutes les sondage_s, pilotee par
+        la boucle d'interaction (pas de thread dans le navigateur)."""
+        if time.time() >= ETAT.prochaine_sonde:
+            ETAT.prochaine_sonde = time.time() + ETAT.cfg.get("sondage_s", 2.0)
+            _sonder_une_fois()
 
     def rafraichir_qr_vague(base):
         """Telecharge le QR du compteur (simulateur) dans game/cache pour l'affichage au cockpit.
         Le QR encode l'URL publique a scanner (ALPHA_VAGUE_URL cote simulateur, sinon l'URL locale)."""
+        if renpy.emscripten:
+            # Web : FS du jeu en lecture seule -> on memorise l'URL publique ;
+            # l'ecran affiche le QR via cette URL (ou le regenere en JS).
+            ETAT.qr_vague_url = base.rstrip("/") + "/participation/qr.png"
+            return False
         try:
             dossier = os.path.join(config.gamedir, "cache")
             if not os.path.isdir(dossier):
@@ -164,8 +207,13 @@ init -10 python:
         return http("POST", det["url"], "/participation/reset", timeout=2.0)
 
     def pont_demarrer():
-        if not ETAT.demarre:
-            ETAT.demarre = True
+        if ETAT.demarre:
+            return
+        ETAT.demarre = True
+        if renpy.emscripten:
+            # Web : pas de thread ; la sonde est appelee par la boucle d'interaction.
+            config.periodic_callback = _tic_sonde_web
+        else:
             fil = threading.Thread(target=boucle_sante)
             fil.daemon = True
             fil.start()
@@ -181,9 +229,13 @@ init -10 python:
             self.resultat = None
             self.debut = time.time()
             self.fin = None
-            fil = threading.Thread(target=self._executer, args=(fonction,))
-            fil.daemon = True
-            fil.start()
+            if renpy.emscripten:
+                # Web : pas de thread ; renpy.fetch bloque brievement l'affichage.
+                self._executer(fonction)
+            else:
+                fil = threading.Thread(target=self._executer, args=(fonction,))
+                fil.daemon = True
+                fil.start()
 
         def _executer(self, fonction):
             try:
@@ -289,9 +341,12 @@ init -10 python:
         def envoyer():
             http("POST", ETAT.cfg["moteur"]["url"], "/events",
                  dict(type=type_, component="payment-api", detail=detail, source="attaquant"), timeout=2.0)
-        fil = threading.Thread(target=envoyer)
-        fil.daemon = True
-        fil.start()
+        if renpy.emscripten:
+            envoyer()  # web : pas de thread
+        else:
+            fil = threading.Thread(target=envoyer)
+            fil.daemon = True
+            fil.start()
 
     def portes_autorisees():
         role = ETAT.cfg.get("role", "tous")
@@ -305,6 +360,15 @@ init -10 python:
         return ETAT.cfg.get("role", "tous") in ("hote", "attaquant")
 
     def lancer_niveau(niveau):
+        if renpy.emscripten:
+            # Web : impossible de lancer un processus local (subprocess).
+            # A deporter cote serveur (endpoint POST /attaque/lancer) ; en
+            # attendant, on l'indique au lieu de planter.
+            ETAT.terminal = ["$ niveau %d" % niveau,
+                             "[indisponible en web : les attaques doivent etre",
+                             " lancees cote serveur (POST /attaque/lancer)]"]
+            ETAT.terminal_etat = "fini"
+            return
         if ETAT.terminal_etat == "en_cours":
             return
         ETAT.runs[niveau] = ETAT.runs.get(niveau, 0) + 1
